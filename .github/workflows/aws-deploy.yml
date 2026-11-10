@@ -119,6 +119,10 @@ jobs:
           key: tfstate-api-gateway-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             tfstate-api-gateway-${{ inputs.environment_name }}-
+      - name: "🛡️ Preparar configuração exclusiva de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs
+
       - name: "🚀 06 · Inicializar Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
       - name: "🔍 07 · Validar configuração Terraform"
@@ -192,10 +196,22 @@ jobs:
         with:
           name: tfplan-api-gateway-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIRECTORY }}
+      - name: "🛡️ Preparar configuração exclusiva de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs
+
       - name: "🚀 06 · Inicializar Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
+      - name: "🛡️ Validar plano exclusivo de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs verify-plan
+
       - name: "✅ 07 · Aplicar plano do Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false -auto-approve tfplan
+      - name: "🔎 Confirmar state sem recursos gerenciados"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs verify-state
+
       - name: "💾 08 · Salvar cache final do state Terraform"
         if: always()
         uses: actions/cache/save@v6
