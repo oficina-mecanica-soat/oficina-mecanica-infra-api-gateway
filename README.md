@@ -213,3 +213,13 @@ Após `apply`, valide o endpoint publicado no SSM, o VPC Link em estado `AVAILAB
 - integrar essa fonte ao Datadog quando houver permissões e mecanismo de ingestão validados.
 
 Documentação central e arquitetura completa: [README da Oficina Mecânica API](https://github.com/geoscabio/oficina-mecanica-api).
+
+### Reconciliação de destroy após reset do laboratório
+
+O destroy restaura o cache Terraform existente e usa uma configuração temporária sem data sources de contratos SSM. O state original não é editado nem descartado: o provider confirma os recursos ausentes durante o plano de destruição. Somente o plano salvo, sem criação ou atualização, pode ser aplicado. Ao terminar, a esteira verifica que o state não contém recursos gerenciados antes de persistir o cache final. Falhas de autenticação, permissão ou rede bloqueiam a operação.
+
+Na API, vínculos Kubernetes só podem ser retirados por blocos declarativos removed com destroy=false após ResourceNotFoundException confirmar que o EKS registrado no state não existe. Com EKS existente, permanece a configuração normal de destroy. Não há uso de state rm, import ou mv.
+
+O retorno isolado de terraform-action.env para apply ainda é reconhecido como mudança de infraestrutura pelo detector de CD; não faça esse retorno enquanto não existir separação segura entre rearmar e provisionar. Preserve destroy após a reconciliação e só autorize nova subida em tarefa própria.
+
+Em 10/11/2026, o laboratório da conta 058264466885 foi confirmado como encerrado definitivamente; o novo laboratório usa 058264483744. O provider bloqueou o refresh de duas regras de security group com Unexpected Identity Change. Para essas regras, a recuperação consulta cada ID com DescribeSecurityGroupRules e só gera removed com destroy=false quando a AWS retorna especificamente InvalidSecurityGroupRuleId.NotFound. O plano e o state final continuam sujeitos às validações da esteira. A ausência na conta nova não é apresentada como consulta à conta antiga; o encerramento e a limpeza anterior são premissas operacionais informadas pela responsável.
