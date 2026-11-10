@@ -83,6 +83,7 @@ jobs:
         uses: actions/checkout@v7
       - name: "🔑 02 · Configurar credenciais AWS"
         uses: aws-actions/configure-aws-credentials@v6
+        id: aws_credentials
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -116,9 +117,16 @@ jobs:
           path: |
             ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
             ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: tfstate-api-gateway-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: tfstate-api-gateway-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            tfstate-api-gateway-${{ inputs.environment_name }}-
+            tfstate-api-gateway-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
+      - name: "🛡️ Validar state da conta AWS atual"
+        run: node .github/scripts/bootstrap-account-state.cjs
+
+      - name: "🛡️ Preparar configuração exclusiva de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs
+
       - name: "🚀 06 · Inicializar Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
       - name: "🔍 07 · Validar configuração Terraform"
@@ -128,8 +136,8 @@ jobs:
         if: env.TERRAFORM_ACTION == 'destroy'
         run: |
           set -euo pipefail
-          api_id="$(terraform -chdir="$TF_WORKING_DIRECTORY" output -raw api_gateway_id 2>/dev/null || true)"
-          vpc_link_id="$(terraform -chdir="$TF_WORKING_DIRECTORY" output -raw vpc_link_id 2>/dev/null || true)"
+          api_id="$(terraform -chdir="$TF_WORKING_DIRECTORY" output -json | jq -r '.api_gateway_id.value // empty')"
+          vpc_link_id="$(terraform -chdir="$TF_WORKING_DIRECTORY" output -json | jq -r '.vpc_link_id.value // empty')"
           [ -n "$api_id" ] || api_id="$(aws apigatewayv2 get-apis --query 'Items[?Name==`oficina-mecanica-api-gateway-dev`].ApiId | [0]' --output text)"
           [ -n "$vpc_link_id" ] || vpc_link_id="$(aws apigatewayv2 get-vpc-links --query 'Items[?Name==`oficina-mecanica-api-gateway-vpc-link-dev`].VpcLinkId | [0]' --output text)"
           [ "$api_id" != None ] || api_id=""
@@ -168,6 +176,7 @@ jobs:
         uses: actions/checkout@v7
       - name: "🔑 02 · Configurar credenciais AWS"
         uses: aws-actions/configure-aws-credentials@v6
+        id: aws_credentials
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -184,18 +193,33 @@ jobs:
           path: |
             ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
             ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: tfstate-api-gateway-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: tfstate-api-gateway-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            tfstate-api-gateway-${{ inputs.environment_name }}-
+            tfstate-api-gateway-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-
       - name: "⬇️ 05 · Baixar plano do Terraform"
         uses: actions/download-artifact@v8
         with:
           name: tfplan-api-gateway-${{ github.run_id }}
           path: ${{ env.TF_WORKING_DIRECTORY }}
+      - name: "🛡️ Validar state da conta AWS atual"
+        run: node .github/scripts/bootstrap-account-state.cjs
+
+      - name: "🛡️ Preparar configuração exclusiva de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs
+
       - name: "🚀 06 · Inicializar Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" init -input=false
+      - name: "🛡️ Validar plano exclusivo de destroy"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs verify-plan
+
       - name: "✅ 07 · Aplicar plano do Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false -auto-approve tfplan
+      - name: "🔎 Confirmar state sem recursos gerenciados"
+        if: env.TERRAFORM_ACTION == 'destroy'
+        run: node .github/scripts/prepare-destroy.cjs verify-state
+
       - name: "💾 08 · Salvar cache final do state Terraform"
         if: always()
         uses: actions/cache/save@v6
@@ -203,7 +227,7 @@ jobs:
           path: |
             ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate
             ${{ env.TF_WORKING_DIRECTORY }}/terraform.tfstate.backup
-          key: tfstate-api-gateway-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: tfstate-api-gateway-${{ steps.aws_credentials.outputs.aws-account-id }}-${{ inputs.environment_name }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: "🔎 09 · Validar API Gateway real após apply"
         if: env.TERRAFORM_ACTION == 'apply'
         run: |
