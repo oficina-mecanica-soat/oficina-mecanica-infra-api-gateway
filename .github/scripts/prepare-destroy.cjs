@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 
-function destroyConfig(state, region, confirmClusterAbsent) {
+function destroyConfig(state, region, confirmClusterAbsent, confirmRuleAbsent = () => false) {
   const resources = state.resources || [];
   if (resources.some(r => /module\..*provider\[/.test(r.provider || ''))) {
     throw new Error('Provider definido dentro de módulo exige tratamento específico; destroy bloqueado.');
@@ -19,6 +19,14 @@ function destroyConfig(state, region, confirmClusterAbsent) {
       if (r.module || !/^kubernetes_\w+$/.test(r.type) || !/^\w+$/.test(r.name)) {
         throw new Error('Endereço Kubernetes não suportado; recuperação bloqueada.');
       }
+      config += `removed {\n from = ${r.type}.${r.name}\n lifecycle { destroy = false }\n}\n`;
+    }
+  }
+  for (const r of resources.filter(r => r.mode === 'managed' && ['aws_vpc_security_group_ingress_rule', 'aws_vpc_security_group_egress_rule'].includes(r.type))) {
+    if (r.module || !/^\w+$/.test(r.name)) throw new Error('Regra em módulo exige tratamento específico.');
+    const ids = (r.instances || []).map(i => i.attributes?.id);
+    if (!ids.length || ids.some(id => !/^sgr-[a-f0-9]+$/.test(id))) throw new Error('Identificador de regra ausente ou inválido.');
+    if (ids.every(id => confirmRuleAbsent(id))) {
       config += `removed {\n from = ${r.type}.${r.name}\n lifecycle { destroy = false }\n}\n`;
     }
   }
@@ -66,6 +74,17 @@ function main() {
       return;
     }
     return false;
+  }, rule => {
+    try {
+      run('aws', ['ec2', 'describe-security-group-rules', '--security-group-rule-ids', rule, '--output', 'json']);
+      return false;
+    } catch (error) {
+      if (!String(error.stderr).includes('(InvalidSecurityGroupRuleId.NotFound)')) {
+        throw new Error('Consulta da regra falhou sem confirmar ausência; recuperação bloqueada.');
+      }
+      console.log(`Regra ${rule} comprovadamente ausente; vínculo removido declarativamente no plano.`);
+      return true;
+    }
   });
   if (config === null) {
     console.log('EKS existente: preservada a configuração normal para destruir o workload.');

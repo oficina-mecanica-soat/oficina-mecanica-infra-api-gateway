@@ -18,3 +18,9 @@ test('plano rejeita criação, atualização e substituição', () => {
   for(const actions of [['create'],['update'],['delete','create']]) assert.throws(()=>verifyPlan({resource_changes:[{address:'test',change:{actions}}]}),/proibida/);
   for(const actions of [['no-op'],['delete'],['forget']]) verifyPlan({resource_changes:[{change:{actions}}]});
 });
+test('regra só pode ser retirada após confirmação específica de ausência', () => {
+  const state = {resources:[{mode:'managed',type:'aws_vpc_security_group_ingress_rule',name:'this',instances:[{attributes:{id:'sgr-123abc'}}]}]};
+  assert.doesNotMatch(destroyConfig(state,'us-east-1',()=>{},()=>false),/removed/);
+  assert.match(destroyConfig(state,'us-east-1',()=>{},id=>id==='sgr-123abc'),/from = aws_vpc_security_group_ingress_rule.this/);
+  assert.throws(()=>destroyConfig(state,'us-east-1',()=>{},()=>{throw Error('AccessDenied')}),/AccessDenied/);
+});
