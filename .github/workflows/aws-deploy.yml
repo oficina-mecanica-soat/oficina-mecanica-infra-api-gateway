@@ -162,7 +162,7 @@ jobs:
       - name: "⬆️ 11 · Publicar plano do Terraform"
         uses: actions/upload-artifact@v7
         with:
-          name: tfplan-api-gateway-${{ github.run_id }}
+          name: tfplan-api-gateway-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.TF_WORKING_DIRECTORY }}/tfplan
           retention-days: 1
           if-no-files-found: error
@@ -208,7 +208,7 @@ jobs:
       - name: "⬇️ 05 · Baixar plano do Terraform"
         uses: actions/download-artifact@v8
         with:
-          name: tfplan-api-gateway-${{ github.run_id }}
+          name: tfplan-api-gateway-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.TF_WORKING_DIRECTORY }}
       - name: "🛡️ Validar state da conta AWS atual"
         run: node .github/scripts/bootstrap-account-state.cjs
