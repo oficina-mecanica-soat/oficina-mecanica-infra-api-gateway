@@ -57,3 +57,9 @@ variable "api_gateway_status_parameter_name" {
   type        = string
   default     = "/oficina-mecanica/development/status/api-gateway"
 }
+
+variable "microsservicos_habilitados" {
+  description = "Ativa o roteamento dos novos owners somente no corte coordenado. Handlers legados devem estar bloqueados na API."
+  type        = bool
+  default     = false
+}
