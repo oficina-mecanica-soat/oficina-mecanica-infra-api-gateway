@@ -316,12 +316,63 @@ jobs:
       - name: "🧪 Validar recuperação segura de destroy"
         run: node --test .github/scripts/*.test.cjs
 
+      - name: "🧪 Validar corte coordenado e plano salvo sem AWS"
+        run: |
+          node <<'TESTAR_CORTE_COORDENADO'
+          const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),cp=require('node:child_process'),assert=require('node:assert/strict');
+          const y=fs.readFileSync('.github/workflows/aws-deploy.yml','utf8').replace(/\r/g,'');
+          const bloco=y.match(/run: &validar_corte_coordenado \|\n([\s\S]*?)(?=      - name:)/)?.[1];assert(bloco);
+          const codigo=bloco.split('\n').map(l=>l.slice(10)).join('\n');
+          const mocks=`
+          exec 3>&2
+          terraform() { printf '{}'; }
+          jq() { cat >/dev/null; printf '%s' "$PLAN_FLAG"; }
+          aws() {
+            printf CONSULTA_AWS >&3
+            if [ "$AWS_NEGADO" = true ]; then return 254; fi
+            case "$1 $2" in
+              'ssm get-parameter')
+                case "$4" in
+                  */status/*) printf '%s' "$STATUS_OWNER";;
+                  */fluxo_distribuido_habilitado) printf '%s' "$CORTE_OWNER";;
+                  */function_name) printf funcao-teste;;
+                  */execucao_internal_nlb_listener_arn) printf arn-execucao;;
+                  *) printf arn-orcamento;;
+                esac;;
+              'lambda get-function-configuration') printf '{"clientes":"%s","sql":%s}' "$AUTH_HTTP" "$AUTH_SQL";;
+              'elbv2 describe-target-health') printf '%s' "$HEALTHY";;
+              'elbv2 describe-listeners')
+                if [ "$6" = 'Listeners[0].Port' ]; then
+                  if [ "$4" = arn-execucao ]; then printf 8081; else printf 8082; fi
+                else printf arn-target-teste; fi;;
+              *) return 255;;
+            esac
+          }
+          `;
+          const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gateway-corte-'));
+          const bash=process.platform==='win32'?'C:/Program Files/Git/bin/bash.exe':'bash';
+          try {
+            const env={...process.env,TF_WORKING_DIRECTORY:'.',TF_VAR_microsservicos_habilitados:'true',STATUS_OWNER:'ready',CORTE_OWNER:'true',AUTH_HTTP:'true',AUTH_SQL:'null',HEALTHY:'1',AWS_NEGADO:'false',SSM_AUTH_LAMBDA_PREFIX:'/auth',SSM_KUBERNETES_PREFIX:'/kubernetes',PLAN_FLAG:'true'};
+            const run=extra=>cp.spawnSync(bash,['-e','-s'],{cwd:dir,input:mocks+'\n'+codigo,encoding:'utf8',env:{...env,...extra}});
+            assert.equal(run({}).status,0);
+            for(const extra of [{STATUS_OWNER:'pendente'},{CORTE_OWNER:'false'},{AUTH_HTTP:'false'},{AUTH_SQL:'"conexao-sintetica"'},{HEALTHY:'0'},{AWS_NEGADO:'true'},{TF_VAR_microsservicos_habilitados:'talvez'}])assert.notEqual(run(extra).status,0);
+            const desabilitado=run({TF_VAR_microsservicos_habilitados:'false'});assert.equal(desabilitado.status,0);assert(!desabilitado.stderr.includes('CONSULTA_AWS'));
+            fs.writeFileSync(path.join(dir,'tfplan'),'plano-ficticio');
+            const salvo=run({PLAN_FLAG:'false'});assert.equal(salvo.status,0);assert(!salvo.stderr.includes('CONSULTA_AWS'),'Flag do plano prevalece sobre Environment.');
+            const ativo=run({TF_VAR_microsservicos_habilitados:'false'});assert.equal(ativo.status,0);assert(ativo.stderr.includes('CONSULTA_AWS'));
+          } finally {assert(path.resolve(dir).startsWith(path.resolve(os.tmpdir())+path.sep+'gateway-corte-'));fs.rmSync(dir,{recursive:true,force:true});}
+          console.log('Corte real: owners prontos, modo HTTP sem SQL, targets saudáveis, AccessDenied e flag do plano salvo verificados.');
+          TESTAR_CORTE_COORDENADO
+
       - name: "🎨 03 · Verificar formatação Terraform"
         run: terraform fmt -check -recursive infra/terraform
       - name: "🚀 04 · Inicializar Terraform sem backend"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" init -backend=false -input=false
       - name: "🔍 05 · Validar configuração Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" validate
+      - name: "🧪 06 · Validar OpenAPI e roteamento com provider simulado"
+        run: terraform -chdir="$TF_WORKING_DIRECTORY" test
+
   quality_gate:
     name: "🚦 03 · Quality gate"
     needs: [detect_ci_scope, validate_git_flow, validate_terraform]
