@@ -172,21 +172,19 @@ Após `apply`, valide o endpoint publicado no SSM, o VPC Link em estado `AVAILAB
 
 #### Apply
 
-1. VPC
-2. Kubernetes
-3. RDS
-4. API workload / NodePort
-5. Auth Lambda
-6. API Gateway
+Esta esteira sobe uma vez com todas as rotas, depois de VPC, Kubernetes, RDS, Auth e dos três serviços: API/OS, Execução e Orçamento/Pagamento. `FLUXO_DISTRIBUIDO_ENABLED=true` exige que os guardrails confirmem workloads, modos aplicados, Lambda privada sem SQL e targets saudáveis.
+
+A URL pública resultante configura o Webhook. A ativação posterior do pagamento atualiza somente Orçamento/Pagamento, mantendo o Gateway. Seguir a [ordem canônica das esteiras](https://github.com/oficina-mecanica-soat/oficina-mecanica-api#deploy-aws).
 
 #### Destroy
 
 1. API Gateway
 2. API workload
 3. Auth Lambda
-4. RDS
-5. Kubernetes
-6. VPC
+4. Orçamento/Pagamento e Execução, com filas/outboxes reconciliadas
+5. RDS
+6. Kubernetes
+7. VPC
 
 ---
 
@@ -212,7 +210,7 @@ Após `apply`, valide o endpoint publicado no SSM, o VPC Link em estado `AVAILAB
 - ampliar alertas específicos a partir dos access logs do CloudWatch;
 - integrar essa fonte ao Datadog quando houver permissões e mecanismo de ingestão validados.
 
-Documentação central e arquitetura completa: [README da Oficina Mecânica API](https://github.com/geoscabio/oficina-mecanica-api).
+Documentação central e arquitetura completa: [README da Oficina Mecânica API](https://github.com/oficina-mecanica-soat/oficina-mecanica-api).
 
 ### Reconciliação de destroy após reset do laboratório
 
