@@ -95,6 +95,28 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
+      - name: "🧪 Validar conferência das rotas públicas implantadas"
+        run: |
+          node <<'TESTAR_ROTAS_IMPLANTADAS'
+          const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+          const fonte=fs.readFileSync('.github/workflows/aws-deploy.yml','utf8').replace(/\r/g,'');
+          const bloco=fonte.match(/          node <<'VALIDAR_ROTAS_IMPLANTADAS'\n([\s\S]*?)          VALIDAR_ROTAS_IMPLANTADAS/);
+          assert(bloco);
+          const arquivo=path.join(process.env.RUNNER_TEMP,'validar-rotas-implantadas.cjs');
+          fs.writeFileSync(arquivo,bloco[1].split('\n').map(l=>l.slice(10)).join('\n'));
+          const {validarRotas}=require(arquivo);
+          const basicas=['POST /auth/documento','ANY /api/{proxy+}'];
+          const completas=[...basicas,...['execucoes','orcamentos','pagamentos'].flatMap(r=>['ANY /api/v1/'+r,'ANY /api/v1/'+r+'/{proxy+}'])];
+          for(const habilitado of [true,'true']) validarRotas(completas,habilitado);
+          for(const habilitado of [false,'false']) validarRotas(basicas,habilitado);
+          assert.throws(()=>validarRotas(basicas,true));
+          assert.throws(()=>validarRotas(completas,false));
+          assert.throws(()=>validarRotas([...completas.slice(1),completas[1]],true));
+          assert.throws(()=>validarRotas([...completas,'ANY /internal/{proxy+}'],true));
+          assert.throws(()=>validarRotas(completas,'TRUE'));
+          console.log('Rotas legadas/distribuídas, ausência, duplicidade e rota indevida verificadas sem AWS.');
+          TESTAR_ROTAS_IMPLANTADAS
+
       - name: "🧪 Validar bloqueio de AWS sem laboratório"
         run: |
           node <<'TESTAR_BLOQUEIO_AWS'
