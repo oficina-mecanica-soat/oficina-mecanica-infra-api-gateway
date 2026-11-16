@@ -287,10 +287,28 @@ jobs:
             sleep 10
           done
           test "$status" = AVAILABLE || { echo "::error::Timeout aguardando VPC Link AVAILABLE."; exit 1; }
-          mapfile -t routes < <(aws apigatewayv2 get-routes --api-id "$api_gateway_id" --query 'Items[].RouteKey' --output text | tr '\t' '\n' | sort)
-          test "${#routes[@]}" -eq 2
-          printf '%s\n' "${routes[@]}" | grep -Fx 'POST /auth/documento'
-          printf '%s\n' "${routes[@]}" | grep -Fx 'ANY /api/{proxy+}'
+          node <<'VALIDAR_ROTAS_IMPLANTADAS'
+          const cp = require('node:child_process');
+          function validarRotas(rotas, habilitado) {
+            if (![true,false,'true','false'].includes(habilitado) || !Array.isArray(rotas)) throw Error('Contrato de rotas inválido.');
+            const esperadas = ['POST /auth/documento','ANY /api/{proxy+}'];
+            if (habilitado === true || habilitado === 'true') {
+              for (const recurso of ['execucoes','orcamentos','pagamentos']) {
+                esperadas.push('ANY /api/v1/'+recurso,'ANY /api/v1/'+recurso+'/{proxy+}');
+              }
+            }
+            if (rotas.length !== esperadas.length || new Set(rotas).size !== rotas.length
+              || rotas.some(rota => !esperadas.includes(rota))) throw Error('Rotas implantadas divergem do modo aprovado no plano salvo.');
+          }
+          if (!module.parent) {
+            const plano = JSON.parse(cp.execFileSync('terraform',[`-chdir=${process.env.TF_WORKING_DIRECTORY}`,'show','-json','tfplan'],{encoding:'utf8'}));
+            const id = cp.execFileSync('terraform',[`-chdir=${process.env.TF_WORKING_DIRECTORY}`,'output','-raw','api_gateway_id'],{encoding:'utf8'}).trim();
+            const rotas = JSON.parse(cp.execFileSync('aws',['apigatewayv2','get-routes','--api-id',id,'--output','json'],{encoding:'utf8'}));
+            validarRotas(rotas.Items?.map(rota=>rota.RouteKey),plano.variables?.microsservicos_habilitados?.value);
+            console.log('Rotas públicas conferidas contra o modo aprovado no plano salvo.');
+          }
+          module.exports = { validarRotas };
+          VALIDAR_ROTAS_IMPLANTADAS
           test "$(aws ssm get-parameter --name "$SSM_API_GATEWAY_PREFIX/api-endpoint" --query Parameter.Value --output text)" = "$api_gateway_endpoint"
           test "$(aws ssm get-parameter --name "$SSM_API_GATEWAY_STATUS_PARAMETER" --query Parameter.Value --output text)" = ready
           for attempt in $(seq 1 10); do
