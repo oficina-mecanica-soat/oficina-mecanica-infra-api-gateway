@@ -2,7 +2,9 @@
 
 Entrada pública HTTPS da solução, com HTTP API, Auth Lambda, VPC Link e roteamento privado para os três microsserviços. Publica access logs no CloudWatch.
 
-## Rotas e ativação
+<a id="rotas-e-ativação"></a>
+
+## 🌉 Rotas e ativação
 
 `POST /auth/documento` chama a Auth Lambda. Rotas de OS/cadastros, Execução e Orçamento/Pagamento seguem para seus listeners no NLB interno. O Webhook de pagamento chega ao serviço de Orçamento/Pagamento.
 
@@ -56,7 +58,9 @@ Após `apply`, valide o endpoint publicado no SSM, o VPC Link em estado `AVAILAB
 
 ---
 
-## Operação e documentação
+<a id="operação-e-documentação"></a>
+
+## 🧭 Operação e documentação
 
 - [Visão geral, arquitetura e ordem das esteiras](https://github.com/oficina-mecanica-soat/oficina-mecanica-api#deploy-aws).
 - [Configuração, primeira aplicação e recuperação após Reset](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/deploy/deploy-aws.md).
