@@ -2,6 +2,39 @@
 
 Entrada pública HTTPS da solução, com HTTP API, Auth Lambda, VPC Link e roteamento privado para os três microsserviços. Publica access logs no CloudWatch.
 
+## 🏗️ Recursos provisionados por esta esteira
+
+- HTTP API do API Gateway, com rotas/integrações importadas do template OpenAPI e stage `$default`.
+- VPC Link e seu security group/regras de conectividade ao NLB interno já existente.
+- Integração Lambda e permissão para o Gateway invocar a função Auth já existente.
+- Integrações HTTP privadas para OS, Execução e Orçamento/Pagamento, consumindo listeners publicados pela esteira Kubernetes.
+- Log group de access logs estruturados no CloudWatch e parâmetros SSM de endpoint/prontidão do Gateway.
+
+Esta esteira não cria o EKS, NLB, workloads, bancos, filas ou função Auth; consome esses recursos das esteiras responsáveis.
+
+## 🛣️ Rotas públicas e destino por microsserviço
+
+| Método no edge | Rota | Destino | Integração privada |
+| --- | --- | --- | --- |
+| POST | `/auth/documento` | Auth Lambda | Integração Lambda; emissão do JWT de Cliente |
+| ANY | `/api/{proxy+}` | OS / API: identidade de operadores, cadastros, ordens e consultas | VPC Link → listener 80 → NodePort 30080 |
+| ANY | `/api/v1/execucoes` e `/api/v1/execucoes/{proxy+}` | Execução: entrada de estoque, preparação e ações do mecânico | VPC Link → listener 8081 → NodePort 30081 |
+| ANY | `/api/v1/orcamentos` e `/api/v1/orcamentos/{proxy+}` | Orçamento/Pagamento: consultas e decisão do orçamento | VPC Link → listener 8082 → NodePort 30082 |
+| ANY | `/api/v1/pagamentos` e `/api/v1/pagamentos/{proxy+}` | Orçamento/Pagamento: consulta financeira e notificações | VPC Link → listener 8082 → NodePort 30082 |
+
+As seis rotas de raiz/proxy dos participantes são incluídas quando `FLUXO_DISTRIBUIDO_ENABLED=true`. São mais específicas que o proxy genérico `/api/{proxy+}`. `ANY` descreve o encaminhamento no Gateway; não cria métodos ou operações que a aplicação não implementa. Cada serviço continua responsável por validar sua rota, JWT, perfil e regras de negócio.
+
+### 🔧 Exemplos de caminhos encaminhados
+
+- Execução: `POST /api/v1/execucoes/estoque/registrar-entrada`; `GET /api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}`; ações de iniciar/finalizar serviço sob a mesma preparação.
+- Orçamento: `GET /api/v1/orcamentos/{id}` e `POST /api/v1/orcamentos/{id}/decisao`. No modo distribuído, gerar/cancelar orçamento permanece coordenado pela Saga de OS.
+- Pagamento: `GET /api/v1/pagamentos/{pagamentoId}` e `POST /api/v1/pagamentos/notificacoes/mercado-pago`. O Webhook usa HMAC/consulta ao provedor, sem JWT; não existe endpoint público para confirmar pagamento manualmente.
+- OS: `/api/health`, cadastros e `/api/v1/gestao-ordem-servico/ordens-servico/...` continuam no proxy de OS.
+
+Os proxies preservam o caminho recebido e removem o cabeçalho técnico `X-Clientes-Internos-Token` das requisições públicas. A consulta privada usada pela Lambda não deve ser exposta como atalho público. Os healthchecks privados de Execução e Orçamento/Pagamento não ganham rotas públicas adicionais: `/api/health` continua chegando à OS.
+
+Fontes: [rotas e integrações do edge](infra/terraform/environments/dev/openapi/api-gateway.yaml.tftpl), [contratos dos participantes](infra/terraform/environments/dev/microsservicos.tf) e [guia da collection com as operações dos serviços](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/postman.md).
+
 <a id="rotas-e-ativação"></a>
 
 ## 🌉 Rotas e ativação
@@ -23,6 +56,10 @@ Implantar após os três serviços e Auth estarem prontos. A URL resultante comp
 | `/oficina-mecanica/development/status/kubernetes` | Estado Kubernetes | Consumido |
 | `/oficina-mecanica/development/kubernetes/internal_nlb_security_group_id` | SG do NLB | Consumido |
 | `/oficina-mecanica/development/kubernetes/internal_nlb_listener_arn` | Listener TCP/80 | Consumido |
+| `/oficina-mecanica/development/kubernetes/execucao_internal_nlb_listener_arn` | Listener TCP/8081 de Execução | Consumido no modo distribuído |
+| `/oficina-mecanica/development/kubernetes/orcamento_pagamento_internal_nlb_listener_arn` | Listener TCP/8082 de Orçamento/Pagamento | Consumido no modo distribuído |
+| `/oficina-mecanica/development/status/api-aplicacao`, `status/execucao` e `status/orcamento-pagamento-aplicacao` | Prontidão dos responsáveis pelas rotas | Consumido no modo distribuído |
+| `/oficina-mecanica/development/api/fluxo_distribuido_habilitado` e `/oficina-mecanica/development/orcamento-pagamento/fluxo_distribuido_habilitado` | Corte coordenado aplicado nos produtores | Exige `true` no modo distribuído |
 | `/oficina-mecanica/development/status/auth-lambda` | Estado Auth Lambda | Consumido |
 | `/oficina-mecanica/development/auth-lambda/function_arn` | Integração Lambda | Consumido |
 | `/oficina-mecanica/development/auth-lambda/function_name` | Permissão Lambda | Consumido |
@@ -49,6 +86,7 @@ Crie em **Settings > Environments > development**:
 | `AWS_SECRET_ACCESS_KEY` | Environment Secret | Secret key temporária do AWS Academy. |
 | `AWS_SESSION_TOKEN` | Environment Secret | Token temporário da sessão AWS Academy. |
 | `AWS_REGION` | Environment Variable | Região AWS, com fallback `us-east-1`. |
+| `FLUXO_DISTRIBUIDO_ENABLED` | Environment Variable | `true` inclui as seis rotas específicas dos participantes e exige contratos/guardrails do corte distribuído; `false` mantém somente Auth e o proxy de OS. |
 | `AUTO_PR_ENABLED` | Repository Variable | `true` quando as promoções automáticas estiverem habilitadas. |
 | `RELEASE_BRANCH` | Repository Variable | Branch de promoção, com fallback `release`. |
 
