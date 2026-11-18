@@ -4,11 +4,24 @@ resource "aws_apigatewayv2_api" "gateway" {
   fail_on_warnings = true
 
   body = templatefile("${path.module}/openapi/api-gateway.yaml.tftpl", {
-    auth_lambda_function_arn  = data.aws_ssm_parameter.auth_lambda_function_arn.value
-    aws_region                = var.aws_region
-    internal_nlb_listener_arn = data.aws_ssm_parameter.internal_nlb_listener_arn.value
-    vpc_link_id               = aws_apigatewayv2_vpc_link.gateway.id
+    auth_lambda_function_arn         = data.aws_ssm_parameter.auth_lambda_function_arn.value
+    aws_region                       = var.aws_region
+    internal_nlb_listener_arn        = data.aws_ssm_parameter.internal_nlb_listener_arn.value
+    microsservicos_habilitados       = var.microsservicos_habilitados
+    execucao_listener_arn            = var.microsservicos_habilitados ? data.aws_ssm_parameter.microsservicos_listener_arn["execucao"].value : ""
+    orcamento_pagamento_listener_arn = var.microsservicos_habilitados ? data.aws_ssm_parameter.microsservicos_listener_arn["orcamento_pagamento"].value : ""
+    vpc_link_id                      = aws_apigatewayv2_vpc_link.gateway.id
   })
+
+  lifecycle {
+    precondition {
+      condition = (
+        alltrue([for parametro in data.aws_ssm_parameter.microsservicos_status : parametro.value == "ready"]) &&
+        alltrue([for parametro in data.aws_ssm_parameter.corte_coordenado : parametro.value == "true"])
+      )
+      error_message = "Os owners devem estar disponíveis e com o corte coordenado ativo antes de publicar as rotas."
+    }
+  }
 }
 
 resource "aws_lambda_permission" "gateway_auth" {

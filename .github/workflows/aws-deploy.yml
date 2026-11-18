@@ -38,6 +38,15 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: "🛡️ Conferir habilitação do deploy AWS"
+        env:
+          DEPLOY_ENABLED: ${{ vars.AWS_DEPLOY_ENABLED }}
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment_name }}
+        run: |
+          test "$DEPLOY_ENABLED" = true
+          test "$GITHUB_REF" = refs/heads/develop
+          test "$DEPLOY_ENVIRONMENT" = development
+
       - name: "🚦 02 · Ler terraform-action.env e validar destroy"
         id: resolve
         env:
@@ -78,6 +87,7 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
+      TF_VAR_microsservicos_habilitados: ${{ vars.FLUXO_DISTRIBUIDO_ENABLED || 'false' }}
     steps:
       - name: "📥 01 · Baixar código do repositório"
         uses: actions/checkout@v7
@@ -144,6 +154,34 @@ jobs:
           [ "$vpc_link_id" != None ] || vpc_link_id=""
           echo "api_gateway_id_before_destroy=$api_id" >> "$GITHUB_OUTPUT"
           echo "vpc_link_id_before_destroy=$vpc_link_id" >> "$GITHUB_OUTPUT"
+      - name: "🛡️ Validar corte coordenado antes de publicar rotas"
+        if: env.TERRAFORM_ACTION == 'apply'
+        run: &validar_corte_coordenado |
+          set -euo pipefail
+          enabled="$TF_VAR_microsservicos_habilitados"
+          if [ -f "$TF_WORKING_DIRECTORY/tfplan" ]; then
+            enabled="$(terraform -chdir="$TF_WORKING_DIRECTORY" show -json tfplan | jq -r '.variables.microsservicos_habilitados.value')"
+          fi
+          case "$enabled" in false) exit 0;; true) ;; *) echo '::error::Flag de corte inválida.'; exit 1;; esac
+          base=/oficina-mecanica/development
+          for owner in api-aplicacao execucao orcamento-pagamento-aplicacao; do
+            test "$(aws ssm get-parameter --name "$base/status/$owner" --query Parameter.Value --output text)" = ready
+          done
+          for owner in api orcamento-pagamento; do
+            test "$(aws ssm get-parameter --name "$base/$owner/fluxo_distribuido_habilitado" --query Parameter.Value --output text)" = true
+          done
+          function_name="$(aws ssm get-parameter --name "$SSM_AUTH_LAMBDA_PREFIX/function_name" --query Parameter.Value --output text)"
+          aws lambda get-function-configuration --function-name "$function_name" --query 'Environment.Variables.{clientes:ClientesApi__Habilitado,sql:ConnectionStrings__SqlServer}' --output json | node -e "try {const v=JSON.parse(require('node:fs').readFileSync(0,'utf8'));if(v.clientes!=='true'||v.sql)process.exit(1);}catch{process.exit(1);}"
+          for owner in execucao orcamento_pagamento; do
+            listener="$(aws ssm get-parameter --name "$SSM_KUBERNETES_PREFIX/${owner}_internal_nlb_listener_arn" --query Parameter.Value --output text)"
+            if [ "$owner" = execucao ]; then expected_port=8081; else expected_port=8082; fi
+            test "$(aws elbv2 describe-listeners --listener-arns "$listener" --query 'Listeners[0].Port' --output text)" = "$expected_port"
+            target="$(aws elbv2 describe-listeners --listener-arns "$listener" --query 'Listeners[0].DefaultActions[0].TargetGroupArn' --output text)"
+            test -n "$target" && test "$target" != None
+            healthy="$(aws elbv2 describe-target-health --target-group-arn "$target" --query 'length(TargetHealthDescriptions[?TargetHealth.State==`healthy`])' --output text)"
+            test "$healthy" -ge 1
+          done
+
       - name: "📐 09 · Gerar plano do Terraform (apply)"
         if: env.TERRAFORM_ACTION == 'apply'
         run: terraform -chdir="$TF_WORKING_DIRECTORY" plan -input=false -out=tfplan
@@ -153,7 +191,7 @@ jobs:
       - name: "⬆️ 11 · Publicar plano do Terraform"
         uses: actions/upload-artifact@v7
         with:
-          name: tfplan-api-gateway-${{ github.run_id }}
+          name: tfplan-api-gateway-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.TF_WORKING_DIRECTORY }}/tfplan
           retention-days: 1
           if-no-files-found: error
@@ -169,6 +207,7 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       TERRAFORM_ACTION: ${{ needs.resolve_action.outputs.terraform_action }}
+      TF_VAR_microsservicos_habilitados: ${{ vars.FLUXO_DISTRIBUIDO_ENABLED || 'false' }}
       API_GATEWAY_ID_BEFORE_DESTROY: ${{ needs.prepare_and_plan.outputs.api_gateway_id_before_destroy }}
       VPC_LINK_ID_BEFORE_DESTROY: ${{ needs.prepare_and_plan.outputs.vpc_link_id_before_destroy }}
     steps:
@@ -199,7 +238,7 @@ jobs:
       - name: "⬇️ 05 · Baixar plano do Terraform"
         uses: actions/download-artifact@v8
         with:
-          name: tfplan-api-gateway-${{ github.run_id }}
+          name: tfplan-api-gateway-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.TF_WORKING_DIRECTORY }}
       - name: "🛡️ Validar state da conta AWS atual"
         run: node .github/scripts/bootstrap-account-state.cjs
@@ -213,6 +252,10 @@ jobs:
       - name: "🛡️ Validar plano exclusivo de destroy"
         if: env.TERRAFORM_ACTION == 'destroy'
         run: node .github/scripts/prepare-destroy.cjs verify-plan
+
+      - name: "🛡️ Revalidar corte coordenado do plano salvo"
+        if: env.TERRAFORM_ACTION == 'apply'
+        run: *validar_corte_coordenado
 
       - name: "✅ 07 · Aplicar plano do Terraform"
         run: terraform -chdir="$TF_WORKING_DIRECTORY" apply -input=false -auto-approve tfplan
@@ -244,10 +287,28 @@ jobs:
             sleep 10
           done
           test "$status" = AVAILABLE || { echo "::error::Timeout aguardando VPC Link AVAILABLE."; exit 1; }
-          mapfile -t routes < <(aws apigatewayv2 get-routes --api-id "$api_gateway_id" --query 'Items[].RouteKey' --output text | tr '\t' '\n' | sort)
-          test "${#routes[@]}" -eq 2
-          printf '%s\n' "${routes[@]}" | grep -Fx 'POST /auth/documento'
-          printf '%s\n' "${routes[@]}" | grep -Fx 'ANY /api/{proxy+}'
+          node <<'VALIDAR_ROTAS_IMPLANTADAS'
+          const cp = require('node:child_process');
+          function validarRotas(rotas, habilitado) {
+            if (![true,false,'true','false'].includes(habilitado) || !Array.isArray(rotas)) throw Error('Contrato de rotas inválido.');
+            const esperadas = ['POST /auth/documento','ANY /api/{proxy+}'];
+            if (habilitado === true || habilitado === 'true') {
+              for (const recurso of ['execucoes','orcamentos','pagamentos']) {
+                esperadas.push('ANY /api/v1/'+recurso,'ANY /api/v1/'+recurso+'/{proxy+}');
+              }
+            }
+            if (rotas.length !== esperadas.length || new Set(rotas).size !== rotas.length
+              || rotas.some(rota => !esperadas.includes(rota))) throw Error('Rotas implantadas divergem do modo aprovado no plano salvo.');
+          }
+          if (!module.parent) {
+            const plano = JSON.parse(cp.execFileSync('terraform',[`-chdir=${process.env.TF_WORKING_DIRECTORY}`,'show','-json','tfplan'],{encoding:'utf8'}));
+            const id = cp.execFileSync('terraform',[`-chdir=${process.env.TF_WORKING_DIRECTORY}`,'output','-raw','api_gateway_id'],{encoding:'utf8'}).trim();
+            const rotas = JSON.parse(cp.execFileSync('aws',['apigatewayv2','get-routes','--api-id',id,'--output','json'],{encoding:'utf8'}));
+            validarRotas(rotas.Items?.map(rota=>rota.RouteKey),plano.variables?.microsservicos_habilitados?.value);
+            console.log('Rotas públicas conferidas contra o modo aprovado no plano salvo.');
+          }
+          module.exports = { validarRotas };
+          VALIDAR_ROTAS_IMPLANTADAS
           test "$(aws ssm get-parameter --name "$SSM_API_GATEWAY_PREFIX/api-endpoint" --query Parameter.Value --output text)" = "$api_gateway_endpoint"
           test "$(aws ssm get-parameter --name "$SSM_API_GATEWAY_STATUS_PARAMETER" --query Parameter.Value --output text)" = ready
           for attempt in $(seq 1 10); do

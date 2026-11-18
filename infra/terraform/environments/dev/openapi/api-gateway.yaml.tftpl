@@ -71,6 +71,86 @@ paths:
       x-amazon-apigateway-integration:
         $ref: "#/components/x-amazon-apigateway-integrations/privateApi"
 
+%{ if microsservicos_habilitados ~}
+  /api/v1/execucoes:
+    x-amazon-apigateway-any-method:
+      summary: Encaminhar para o serviço proprietário
+      operationId: encaminharexecucoesRaiz
+      responses:
+        default:
+          description: Resposta do serviço proprietário.
+      x-amazon-apigateway-integration:
+        $ref: "#/components/x-amazon-apigateway-integrations/privateExecucao"
+
+  /api/v1/execucoes/{proxy+}:
+    x-amazon-apigateway-any-method:
+      summary: Encaminhar para o serviço proprietário
+      operationId: encaminharexecucoesDetalhe
+      parameters:
+        - name: proxy
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Resposta do serviço proprietário.
+      x-amazon-apigateway-integration:
+        $ref: "#/components/x-amazon-apigateway-integrations/privateExecucao"
+
+  /api/v1/orcamentos:
+    x-amazon-apigateway-any-method:
+      summary: Encaminhar para o serviço proprietário
+      operationId: encaminharorcamentosRaiz
+      responses:
+        default:
+          description: Resposta do serviço proprietário.
+      x-amazon-apigateway-integration:
+        $ref: "#/components/x-amazon-apigateway-integrations/privateOrcamentoPagamento"
+
+  /api/v1/orcamentos/{proxy+}:
+    x-amazon-apigateway-any-method:
+      summary: Encaminhar para o serviço proprietário
+      operationId: encaminharorcamentosDetalhe
+      parameters:
+        - name: proxy
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Resposta do serviço proprietário.
+      x-amazon-apigateway-integration:
+        $ref: "#/components/x-amazon-apigateway-integrations/privateOrcamentoPagamento"
+
+  /api/v1/pagamentos:
+    x-amazon-apigateway-any-method:
+      summary: Encaminhar para o serviço proprietário
+      operationId: encaminharpagamentosRaiz
+      responses:
+        default:
+          description: Resposta do serviço proprietário.
+      x-amazon-apigateway-integration:
+        $ref: "#/components/x-amazon-apigateway-integrations/privateOrcamentoPagamento"
+
+  /api/v1/pagamentos/{proxy+}:
+    x-amazon-apigateway-any-method:
+      summary: Encaminhar para o serviço proprietário
+      operationId: encaminharpagamentosDetalhe
+      parameters:
+        - name: proxy
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        default:
+          description: Resposta do serviço proprietário.
+      x-amazon-apigateway-integration:
+        $ref: "#/components/x-amazon-apigateway-integrations/privateOrcamentoPagamento"
+
+%{ endif ~}
 components:
   schemas:
     AuthDocumentoRequest:
@@ -134,3 +214,29 @@ components:
       payloadFormatVersion: "1.0"
       requestParameters:
         "overwrite:path": "$request.path"
+        "remove:header.X-Clientes-Internos-Token": "''"
+
+%{ if microsservicos_habilitados ~}
+    privateExecucao:
+      type: http_proxy
+      httpMethod: ANY
+      connectionType: VPC_LINK
+      connectionId: "${vpc_link_id}"
+      uri: "${execucao_listener_arn}"
+      payloadFormatVersion: "1.0"
+      requestParameters:
+        "overwrite:path": "$request.path"
+        "remove:header.X-Clientes-Internos-Token": "''"
+
+    privateOrcamentoPagamento:
+      type: http_proxy
+      httpMethod: ANY
+      connectionType: VPC_LINK
+      connectionId: "${vpc_link_id}"
+      uri: "${orcamento_pagamento_listener_arn}"
+      payloadFormatVersion: "1.0"
+      requestParameters:
+        "overwrite:path": "$request.path"
+        "remove:header.X-Clientes-Internos-Token": "''"
+
+%{ endif ~}

@@ -1,66 +1,50 @@
 # 🌉 Oficina Mecânica Infra API Gateway
 
-Infraestrutura da entrada pública única da Oficina Mecânica no Tech Challenge FIAP — Fase 3.
+Entrada pública HTTPS da solução, com HTTP API, Auth Lambda, VPC Link e roteamento privado para os três microsserviços. Publica access logs no CloudWatch.
 
----
+## 🏗️ Recursos provisionados por esta esteira
 
-## 🎯 Objetivo
+- HTTP API do API Gateway, com rotas/integrações importadas do template OpenAPI e stage `$default`.
+- VPC Link e seu security group/regras de conectividade ao NLB interno já existente.
+- Integração Lambda e permissão para o Gateway invocar a função Auth já existente.
+- Integrações HTTP privadas para OS, Execução e Orçamento/Pagamento, consumindo listeners publicados pela esteira Kubernetes.
+- Log group de access logs estruturados no CloudWatch e parâmetros SSM de endpoint/prontidão do Gateway.
 
-Este repositório é responsável por definir a HTTP API que encaminha `POST /auth/documento` para a Auth Lambda e `ANY /api/{proxy+}` para a API privada.
+Esta esteira não cria o EKS, NLB, workloads, bancos, filas ou função Auth; consome esses recursos das esteiras responsáveis.
 
-O contrato OpenAPI do edge é a fonte da verdade das rotas e integrações do Gateway. O Terraform continua responsável pelo recurso do API Gateway, stage, VPC Link, segurança, observabilidade, permissões, contratos SSM e outputs.
+## 🛣️ Rotas públicas e destino por microsserviço
 
----
+| Método no edge | Rota | Destino | Integração privada |
+| --- | --- | --- | --- |
+| POST | `/auth/documento` | Auth Lambda | Integração Lambda; emissão do JWT de Cliente |
+| ANY | `/api/{proxy+}` | OS / API: identidade de operadores, cadastros, ordens e consultas | VPC Link → listener 80 → NodePort 30080 |
+| ANY | `/api/v1/execucoes` e `/api/v1/execucoes/{proxy+}` | Execução: entrada de estoque, preparação e ações do mecânico | VPC Link → listener 8081 → NodePort 30081 |
+| ANY | `/api/v1/orcamentos` e `/api/v1/orcamentos/{proxy+}` | Orçamento/Pagamento: consultas e decisão do orçamento | VPC Link → listener 8082 → NodePort 30082 |
+| ANY | `/api/v1/pagamentos` e `/api/v1/pagamentos/{proxy+}` | Orçamento/Pagamento: consulta financeira e notificações | VPC Link → listener 8082 → NodePort 30082 |
 
-## 📌 Responsabilidades
+As seis rotas de raiz/proxy dos participantes são incluídas quando `FLUXO_DISTRIBUIDO_ENABLED=true`. São mais específicas que o proxy genérico `/api/{proxy+}`. `ANY` descreve o encaminhamento no Gateway; não cria métodos ou operações que a aplicação não implementa. Cada serviço continua responsável por validar sua rota, JWT, perfil e regras de negócio.
 
-| Este repositório possui | Consome | Não pertence a este repositório |
-| --- | --- | --- |
-| HTTP API, stage `$default`, rotas, integrações, VPC Link, SG do VPC Link, regra VPC Link → NLB, Lambda permission, access logs e SSM próprio | Contratos da VPC, Kubernetes/NLB interno e Auth Lambda | VPC/subnets, NLB/Target Group/listener, EKS, Service Kubernetes, Auth Lambda, RDS, secrets/JWT e workload da API |
+### 🔧 Exemplos de caminhos encaminhados
 
----
+- Execução: `POST /api/v1/execucoes/estoque/registrar-entrada`; `GET /api/v1/execucoes/{ordemServicoId}/preparacoes/{preparacaoId}`; ações de iniciar/finalizar serviço sob a mesma preparação.
+- Orçamento: `GET /api/v1/orcamentos/{id}` e `POST /api/v1/orcamentos/{id}/decisao`. No modo distribuído, gerar/cancelar orçamento permanece coordenado pela Saga de OS.
+- Pagamento: `GET /api/v1/pagamentos/{pagamentoId}` e `POST /api/v1/pagamentos/notificacoes/mercado-pago`. O Webhook usa HMAC/consulta ao provedor, sem JWT; não existe endpoint público para confirmar pagamento manualmente.
+- OS: `/api/health`, cadastros e `/api/v1/gestao-ordem-servico/ordens-servico/...` continuam no proxy de OS.
 
-## 🏗️ Arquitetura
+Os proxies preservam o caminho recebido e removem o cabeçalho técnico `X-Clientes-Internos-Token` das requisições públicas. A consulta privada usada pela Lambda não deve ser exposta como atalho público. Os healthchecks privados de Execução e Orçamento/Pagamento não ganham rotas públicas adicionais: `/api/health` continua chegando à OS.
 
-```text
-Internet
-   |
-   v
-API Gateway HTTP API
-   +-- POST /auth/documento -> Auth Lambda -> RDS
-   +-- ANY /api/{proxy+} -> VPC Link -> NLB interno -> EKS/API
-```
+Fontes: [rotas e integrações do edge](infra/terraform/environments/dev/openapi/api-gateway.yaml.tftpl), [contratos dos participantes](infra/terraform/environments/dev/microsservicos.tf) e [guia da collection com as operações dos serviços](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/postman.md).
 
-| Rota | Destino |
-| --- | --- |
-| `POST /auth/documento` | Auth Lambda |
-| `ANY /api/{proxy+}` | VPC Link → NLB interno → EKS/API |
-| `/api/health` | Atendida pela rota proxy |
+<a id="rotas-e-ativação"></a>
 
-O backend é privado; o Gateway é a entrada pública única após o cutover F3-012.
+## 🌉 Rotas e ativação
 
-### OpenAPI do edge × Swagger da aplicação
+`POST /auth/documento` chama a Auth Lambda. Rotas de OS/cadastros, Execução e Orçamento/Pagamento seguem para seus listeners no NLB interno. O Webhook de pagamento chega ao serviço de Orçamento/Pagamento.
 
-O arquivo `openapi/api-gateway.yaml.tftpl` descreve somente o contrato público do edge: a autenticação por documento e o proxy privado sob `/api/*`. Ele não substitui nem duplica o Swagger completo da aplicação .NET, que continua sendo dona das rotas internas `/api/...` e `/api/v1/...`.
+O contrato do edge está em `infra/terraform/environments/dev/openapi/api-gateway.yaml.tftpl`; não substitui os OpenAPIs dos serviços. No modo distribuído, os guardrails conferem flags, prontidão dos workloads, consulta privada da Lambda e targets saudáveis antes do corte.
 
-As rotas e integrações do Gateway são importadas pelo atributo `aws_apigatewayv2_api.body`. Os demais recursos de infraestrutura continuam declarados diretamente em Terraform.
+Implantar após os três serviços e Auth estarem prontos. A URL resultante completa a configuração do Webhook; a ativação posterior atualiza Orçamento/Pagamento, sem segunda implantação obrigatória do Gateway. No destroy, remover primeiro esta entrada pública.
 
----
-
-## 🧰 Tecnologias
-
-| Tecnologia | Papel |
-| --- | --- |
-| Terraform | Infraestrutura declarativa |
-| OpenAPI 3.0.1 | Contrato das rotas e integrações do edge |
-| API Gateway v2 HTTP API | Entrada pública |
-| VPC Link / NLB interno | Conectividade privada |
-| Lambda / EKS | Destinos das rotas |
-| SSM Parameter Store | Contratos entre esteiras |
-| CloudWatch Logs | Access logs |
-| GitHub Actions | Integração contínua |
-
----
 
 ## 🔗 Dependências e contratos SSM
 
@@ -72,72 +56,15 @@ As rotas e integrações do Gateway são importadas pelo atributo `aws_apigatewa
 | `/oficina-mecanica/development/status/kubernetes` | Estado Kubernetes | Consumido |
 | `/oficina-mecanica/development/kubernetes/internal_nlb_security_group_id` | SG do NLB | Consumido |
 | `/oficina-mecanica/development/kubernetes/internal_nlb_listener_arn` | Listener TCP/80 | Consumido |
+| `/oficina-mecanica/development/kubernetes/execucao_internal_nlb_listener_arn` | Listener TCP/8081 de Execução | Consumido no modo distribuído |
+| `/oficina-mecanica/development/kubernetes/orcamento_pagamento_internal_nlb_listener_arn` | Listener TCP/8082 de Orçamento/Pagamento | Consumido no modo distribuído |
+| `/oficina-mecanica/development/status/api-aplicacao`, `status/execucao` e `status/orcamento-pagamento-aplicacao` | Prontidão dos responsáveis pelas rotas | Consumido no modo distribuído |
+| `/oficina-mecanica/development/api/fluxo_distribuido_habilitado` e `/oficina-mecanica/development/orcamento-pagamento/fluxo_distribuido_habilitado` | Corte coordenado aplicado nos produtores | Exige `true` no modo distribuído |
 | `/oficina-mecanica/development/status/auth-lambda` | Estado Auth Lambda | Consumido |
 | `/oficina-mecanica/development/auth-lambda/function_arn` | Integração Lambda | Consumido |
 | `/oficina-mecanica/development/auth-lambda/function_name` | Permissão Lambda | Consumido |
 | `/oficina-mecanica/development/api-gateway/api-endpoint` | Endpoint público | Publicado após deploy |
 | `/oficina-mecanica/development/status/api-gateway` | Estado do Gateway | Publicado após deploy |
-
----
-
-## 📁 Estrutura do repositório
-
-```text
-.
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-├── infra/
-│   └── terraform/
-│       └── environments/
-│           └── dev/
-│               ├── openapi/
-│               │   └── api-gateway.yaml.tftpl
-│               ├── api-gateway.tf
-│               ├── networking.tf
-│               ├── dependencies.tf
-│               ├── observability.tf
-│               ├── contracts.tf
-│               ├── outputs.tf
-│               ├── locals.tf
-│               ├── variables.tf
-│               ├── providers.tf
-│               ├── versions.tf
-│               └── .terraform.lock.hcl
-└── README.md
-```
-
----
-
-## 🌿 Git Flow e governança
-
-```text
-branch de trabalho -> develop -> release -> main
-```
-
-```text
-branch de trabalho -> PR develop -> PR release -> PR main
-```
-
-Branches protegidas: `develop`, `release`, `release/*` e `main`.
-
-- `Proteção Git Flow`: exige PR, resolução de conversas e checks; bloqueia push direto, force push e deletion; não possui bypass.
-- `Aprovação de PR`: exige revisão e permite bypass somente via PR para atores autorizados.
-
-Checks obrigatórios: `🔀 01 · Validar fluxo de branches` e `🚦 03 · Quality gate`.
-
----
-
-## 🧪 CI
-
-| Job | Responsabilidade |
-| --- | --- |
-| `🔎 00 · Detectar escopo do PR` | Identifica mudanças relevantes |
-| `🔀 01 · Validar fluxo de branches` | Confere origem e destino do PR |
-| `🌐 02 · Validar Terraform do API Gateway` | Executa fmt/init/validate para mudanças relevantes |
-| `🚦 03 · Quality gate` | Consolida os resultados |
-
-Com o Terraform presente, a validação pesada é exigida para mudanças deployáveis.
 
 ---
 
@@ -159,6 +86,7 @@ Crie em **Settings > Environments > development**:
 | `AWS_SECRET_ACCESS_KEY` | Environment Secret | Secret key temporária do AWS Academy. |
 | `AWS_SESSION_TOKEN` | Environment Secret | Token temporário da sessão AWS Academy. |
 | `AWS_REGION` | Environment Variable | Região AWS, com fallback `us-east-1`. |
+| `FLUXO_DISTRIBUIDO_ENABLED` | Environment Variable | `true` inclui as seis rotas específicas dos participantes e exige contratos/guardrails do corte distribuído; `false` mantém somente Auth e o proxy de OS. |
 | `AUTO_PR_ENABLED` | Repository Variable | `true` quando as promoções automáticas estiverem habilitadas. |
 | `RELEASE_BRANCH` | Repository Variable | Branch de promoção, com fallback `release`. |
 
@@ -168,64 +96,16 @@ Após `apply`, valide o endpoint publicado no SSM, o VPC Link em estado `AVAILAB
 
 ---
 
-## 🧨 Ordem de operação
+<a id="operação-e-documentação"></a>
 
-#### Apply
+## 🧭 Operação e documentação
 
-1. VPC
-2. Kubernetes
-3. RDS
-4. API workload / NodePort
-5. Auth Lambda
-6. API Gateway
+- [Visão geral, arquitetura e ordem das esteiras](https://github.com/oficina-mecanica-soat/oficina-mecanica-api#deploy-aws).
+- [Configuração, primeira aplicação e recuperação após Reset](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/deploy/deploy-aws.md).
+- [Collection consolidada e ambientes Local/Development](https://github.com/oficina-mecanica-soat/oficina-mecanica-api/blob/develop/docs/evidencias/postman.md).
 
-#### Destroy
+Todo provisionamento, atualização e destroy na AWS ocorre pelas esteiras oficiais. O controle é `infra/terraform/environments/dev/terraform-action.env`; destroy exige alteração dedicada e verificação dos consumidores. `AWS_DEPLOY_ENABLED` autoriza a janela real, e `AUTO_PR_ENABLED` controla somente a abertura de promoções. Alterar uma Variable não dispara o CD.
 
-1. API Gateway
-2. API workload
-3. Auth Lambda
-4. RDS
-5. Kubernetes
-6. VPC
+Um ambiente disponível pode ser testado sem destroy. Sem estado compatível, alguns owners exigem primeiro uma recuperação por destroy dedicado com inventário vazio comprovado. Não apague recursos ou caches para contornar o bloqueio; consulte o guia antes de iniciar uma conta ou retomar um laboratório.
 
----
-
-## 📍 Status atual
-
-| Item | Estado |
-| --- | --- |
-| Repositório | ✅ |
-| main/develop/release | ✅ |
-| Rulesets | ✅ |
-| CI | ✅ |
-| README | ✅ |
-| Terraform | ✅ |
-| Contrato OpenAPI do edge | ✅ |
-| CD Development | ✅ |
-| AWS Deploy | ✅ |
-| Deploy real | ✅ Implementado pela esteira |
-| E2E F3-012 | ✅ Concluído |
-| Cutover | ✅ Concluído |
-
-## 🗺️ Evoluções pós-entrega
-
-- ampliar alertas específicos a partir dos access logs do CloudWatch;
-- integrar essa fonte ao Datadog quando houver permissões e mecanismo de ingestão validados.
-
-Documentação central e arquitetura completa: [README da Oficina Mecânica API](https://github.com/geoscabio/oficina-mecanica-api).
-
-### Reconciliação de destroy após reset do laboratório
-
-O destroy restaura o cache Terraform existente e usa uma configuração temporária sem data sources de contratos SSM. O state original não é editado nem descartado: o provider confirma os recursos ausentes durante o plano de destruição. Somente o plano salvo, sem criação ou atualização, pode ser aplicado. Ao terminar, a esteira verifica que o state não contém recursos gerenciados antes de persistir o cache final. Falhas de autenticação, permissão ou rede bloqueiam a operação.
-
-Na API, vínculos Kubernetes só podem ser retirados por blocos declarativos removed com destroy=false após ResourceNotFoundException confirmar que o EKS registrado no state não existe. Com EKS existente, permanece a configuração normal de destroy. Não há uso de state rm, import ou mv.
-
-O retorno isolado de terraform-action.env para apply ainda é reconhecido como mudança de infraestrutura pelo detector de CD; não faça esse retorno enquanto não existir separação segura entre rearmar e provisionar. Preserve destroy após a reconciliação e só autorize nova subida em tarefa própria.
-
-Em 10/11/2026, o laboratório da conta 058264466885 foi confirmado como encerrado definitivamente; o novo laboratório usa 058264483744. O provider bloqueou o refresh de duas regras de security group com Unexpected Identity Change. Para essas regras, a recuperação consulta cada ID com DescribeSecurityGroupRules e só gera removed com destroy=false quando a AWS retorna especificamente InvalidSecurityGroupRuleId.NotFound. O plano e o state final continuam sujeitos às validações da esteira. A ausência na conta nova não é apresentada como consulta à conta antiga; o encerramento e a limpeza anterior são premissas operacionais informadas pela responsável.
-
-#### State isolado por conta AWS
-
-As chaves de cache incluem o ID da conta retornado pela autenticação AWS, antes do ambiente e da execução. A restauração só pesquisa esse escopo, sem fallback para chaves históricas sem conta. Os caches anteriores permanecem preservados como histórico do laboratório encerrado 058264466885, inclusive quando contêm referências que a conta atual não consegue consultar. AccessDenied não é convertido em ausência.
-
-Sem cache no escopo atual, a esteira bloqueia apply. Um destroy dedicado só pode iniciar state novo depois de consultas read-only confirmarem que não existem recursos ou contratos do projeto na conta atual. Recursos internos do laboratório são preservados. Depois disso, o plano exclusivo de destroy e a validação de state vazio produzem o cache usado pelas próximas execuções da mesma conta. Em laboratório com recursos existentes e cache ausente, é necessário recuperar o state correto; o bootstrap não libera provisionamento automático.
+Fluxo Git: branch de trabalho → PR para `develop` → `release` → `main`. O CD físico ocorre em development; release e production registram promoções lógicas. PRs e merges permanecem sujeitos aos checks e à revisão. Mudanças somente em README/docs não exigem deploy físico pelos detectores atuais.
